@@ -1,0 +1,2061 @@
+     1                                  %define PILLAR_WIDTH 32
+     2                                  %define PILLAR_HEIGHT 128
+     3                                  %define PILLAR_COUNT 3
+     4                                  %define STARTING_ROW 320-40
+     5                                  %define PILLAR_STEP 10
+     6                                  %define PILLAR_GAP 320/3
+     7                                  %define VERTICAL_PILLAR_GAP 40
+     8                                  
+     9                                  %define BIRD_HEIGHT 24
+    10                                  %define BIRD_WIDTH 32
+    11                                  
+    12                                  %define MUSIC_FREQ 440
+    13                                  %define MUSIC_DURATION 50
+    14                                  %define NOTE_COUNT 8
+    15                                  
+    16                                  section .text
+    17                                  [org 0x0100]
+    18                                  
+    19 00000000 E9BB0D                  jmp start
+    20                                  %include "file.asm"
+     1                              <1> ; AX Will Contain File Handle if Open (CF = 0)
+     2                              <1> ; AX Will Contain Error Code If Not Able to Open (CF = 1)
+     3                              <1> %MACRO openfile 1
+     4                              <1> push dx
+     5                              <1> mov dx, %1
+     6                              <1> mov al, 0
+     7                              <1> mov ah, 0x3D
+     8                              <1> int 0x21
+     9                              <1> pop dx
+    10                              <1> %ENDMACRO
+    11                              <1> 
+    12                              <1> ; AX Will Contain Garbage if Closed (CF = 0)
+    13                              <1> ; AX Will Contain Error Code If Not Able to Close (CF = 1)
+    14                              <1> %MACRO closefile 1
+    15                              <1> push bx
+    16                              <1> mov ah, 0x3E
+    17                              <1> mov bx, %1
+    18                              <1> int 0x21
+    19                              <1> pop bx
+    20                              <1> %ENDMACRO
+    21                              <1> 
+    22                              <1> ; NOTE: CHANGES BX, DX, CX, AX
+    23                              <1> ; AX Will Contain Number of Bytes Read if Read is Successfull (CF = 0)
+    24                              <1> ; AX Will Contain Error Code If Not Able to Read (CF = 1)
+    25                              <1> %MACRO readfile 3
+    26                              <1> pusha
+    27                              <1> mov bx, %1  ; File Handle
+    28                              <1> mov cx, %2  ; Size to Read
+    29                              <1> mov dx, %3  ; Buffer Location
+    30                              <1> mov ah, 0x3F
+    31                              <1> int 0x21
+    32                              <1> popa
+    33                              <1> %ENDMACRO
+    34                              <1> 
+    35                              <1> ; DX:AX Will Contain New Position if Set Cursor is Successfull (CF = 0)
+    36                              <1> ; AX Will Contain Error Code If Not Able to Set Cursor (CF = 1)
+    37                              <1> %MACRO setCursor 3
+    38                              <1> push bx
+    39                              <1> push cx
+    40                              <1> 
+    41                              <1> push word %1
+    42                              <1> push word %2
+    43                              <1> push word %3
+    44                              <1> 
+    45                              <1> pop dx; Offset LSBs
+    46                              <1> pop cx; Offset MSBs
+    47                              <1> pop bx; File Handle
+    48                              <1> mov ax, 0x4200
+    49                              <1> int 0x21
+    50                              <1> pop bx
+    51                              <1> pop cx
+    52                              <1> %ENDMACRO
+    21                                  
+    22 00000003 FF                      transparent_pallette db 0xFF
+    23                                  
+    24 00000004 73706163652E626D70-     bg_filename db 'space.bmp', 0       
+    24 0000000D 00                 
+    25 0000000E 0000                    bg_handle dw 0
+    26                                  
+    27 00000010 736869702E626D7000      bird_filename db 'ship.bmp', 0
+    28 00000019 0000                    bird_handle dw 0
+    29                                  
+    30 0000001B 70322E626D7000          pillar_filename db 'p2.bmp', 0
+    31 00000022 0000                    pillar_handle dw 0
+    32                                  
+    33 00000024 70312E626D7000          down_pillar_filename db 'p1.bmp', 0
+    34 0000002B 0000                    down_pillar_handle dw 0
+    35                                  
+    36 0000002D 73746172742E626D70-     start_screen_filename db 'start.bmp', 0
+    36 00000036 00                 
+    37 00000037 0000                    start_screen_handle dw 0
+    38                                  
+    39 00000039 68656C702E626D7000      help_screen_filename db 'help.bmp', 0
+    40 00000042 0000                    help_screen_handle dw 0
+    41                                  
+    42 00000044 67616D656F7665722E-     gameOverScreen_filename db 'gameover.bmp', 0
+    42 0000004D 626D7000           
+    43 00000051 0000                    gameOverScreen_handle dw 0
+    44                                  
+    45 00000053 6400                    bird_row: dw 100
+    46 00000055 6400                    bird_column: dw 100
+    47                                  
+    48 00000057 FFFFFFFF1801            pillar_columns: dw -1, -1, STARTING_ROW
+    49 0000005D 320046004000            pillar_heights: dw 50, 70, 64
+    50                                  
+    51 00000063 00                      spacePressed: db 0
+    52 00000064 00                      collsionFlag: db 0
+    53                                  
+    54 00000065 0D5072657373205920-     escMsg: db 13, "Press Y to exit or N to continue!$"
+    54 0000006E 746F2065786974206F-
+    54 00000077 72204E20746F20636F-
+    54 00000080 6E74696E75652124   
+    55 00000088 00                      YPressed: db 0
+    56 00000089 00                      NPressed: db 0
+    57                                  
+    58 0000008A 0000                    score: dw 0
+    59 0000008C 00                      scoreAdded: db 0
+    60 0000008D 00                      transparentColor: db 0
+    61 0000008E 050000000024            ScoreBuffer db 5, 0, 0, 0, 0, '$' ;buffer for the string (up to 5 digits and $ for display)
+    62 00000094 53636F72653A2024        scoreMessage db 'Score: $'
+    63                                  
+    64 0000009C 47616D65204F766572-     gameOverMessage db 'Game Over! Press any key to exit.$'
+    64 000000A5 212050726573732061-
+    64 000000AE 6E79206B657920746F-
+    64 000000B7 20657869742E24     
+    65 000000BE 0A0D24                  newLine db 10, 13, '$'
+    66                                  
+    67 000000C1 2C                      PILLAR_OUTLINE_COLOR: db 0x2C
+    68                                  
+    69 000000C2 F401                    sound_length dw 500         ; Sound duration in timer ticks
+    70 000000C4 DC34                    sound_freq_low  dw 0x34DC   ; Lower 16 bits of 1193180
+    71 000000C6 1200                    sound_freq_high dw 0x0012   ; Upper 16 bits of 1193180
+    72 000000C8 E803                    jump_freq    dw 1000        ; Frequency for jump sound
+    73 000000CA C800                    crash_freq   dw 200         ; Frequency for crash sound
+    74 000000CC 2003                    score_freq   dw 800         ; Frequency for scoring sound
+    75                                  
+    76 000000CE 00000000                pcb: dw 0, 0; SS, SP
+    77 000000D2 00000000                     dw 0, 0; SS, SP
+    78                                  
+    79 000000D6 0000<rep FFh>           stack: times 255 dw 0
+    80 000002D4 0000                    current: dw 0
+    81                                  
+    82                                  
+    83                                  play_sound:
+    84 000002D6 60                          pusha
+    85                                      ; Set up the timer (mode 3, square wave)
+    86 000002D7 B0B6                        mov al, 0b6h
+    87 000002D9 E643                        out 43h, al
+    88                                      
+    89                                      ; Load and output frequency divider
+    90 000002DB 8B16[C600]                  mov dx, [sound_freq_high]
+    91 000002DF A1[C400]                    mov ax, [sound_freq_low]
+    92 000002E2 F736[C800]                  div word [jump_freq]    ; Divide by desired frequency
+    93 000002E6 E642                        out 42h, al            ; Output low byte
+    94 000002E8 88E0                        mov al, ah
+    95 000002EA E642                        out 42h, al            ; Output high byte
+    96                                      
+    97                                      ; Turn on speaker
+    98 000002EC E461                        in al, 61h
+    99 000002EE 0C03                        or al, 3
+   100 000002F0 E661                        out 61h, al
+   101                                      
+   102                                      ; Delay loop
+   103 000002F2 8B0E[C200]                  mov cx, [sound_length]
+   104                                      .delay:
+   105 000002F6 51                              push cx
+   106 000002F7 B96400                          mov cx, 100
+   107                                          .inner_delay:
+   108 000002FA E2FE                                loop .inner_delay
+   109 000002FC 59                              pop cx
+   110 000002FD E2F7                            loop .delay
+   111                                      
+   112                                      ; Turn off speaker
+   113 000002FF E461                        in al, 61h
+   114 00000301 24FC                        and al, 0FCh
+   115 00000303 E661                        out 61h, al
+   116                                      
+   117 00000305 61                          popa
+   118 00000306 C3                          ret
+   119                                  
+   120                                  play_jump_sound:
+   121 00000307 60                          pusha
+   122 00000308 8B16[C600]                  mov dx, [sound_freq_high]
+   123 0000030C A1[C400]                    mov ax, [sound_freq_low]
+   124 0000030F F736[C800]                  div word [jump_freq]
+   125 00000313 C706[C200]6400              mov word [sound_length], 100  ; Short duration
+   126 00000319 E8BAFF                      call play_sound
+   127 0000031C 61                          popa
+   128 0000031D C3                          ret
+   129                                  
+   130                                  play_crash_sound:
+   131 0000031E 60                          pusha
+   132 0000031F 8B16[C600]                  mov dx, [sound_freq_high]
+   133 00000323 A1[C400]                    mov ax, [sound_freq_low]
+   134 00000326 F736[CA00]                  div word [crash_freq]
+   135 0000032A C706[C200]E803              mov word [sound_length], 1000 ; Longer duration
+   136 00000330 E8A3FF                      call play_sound
+   137 00000333 61                          popa
+   138 00000334 C3                          ret
+   139                                  
+   140                                  play_score_sound:
+   141 00000335 60                          pusha
+   142 00000336 8B16[C600]                  mov dx, [sound_freq_high]
+   143 0000033A A1[C400]                    mov ax, [sound_freq_low]
+   144 0000033D F736[CC00]                  div word [score_freq]
+   145 00000341 C706[C200]C800              mov word [sound_length], 200  ; Medium duration
+   146 00000347 E88CFF                      call play_sound
+   147 0000034A 61                          popa
+   148 0000034B C3                          ret
+   149                                  
+   150                                  delay1:
+   151 0000034C 51                          push cx
+   152 0000034D B90A00                      mov cx, 10
+   153                                      .l1:
+   154 00000350 51                              push cx
+   155 00000351 B9FFFF                          mov cx, 0xFFFF
+   156                                          .l2:
+   157 00000354 E2FE                                loop .l2
+   158 00000356 59                              pop cx
+   159 00000357 E2F7                            loop .l1
+   160 00000359 59                          pop cx
+   161 0000035A C3                          ret
+   162                                  
+   163                                  drawBG:
+   164 0000035B 60                          pusha
+   165                                  
+   166                                      ; Read the BMP header
+   167                                      setCursor [bg_handle], 0, 54
+    38 0000035C 53                  <1> push bx
+    39 0000035D 51                  <1> push cx
+    40                              <1> 
+    41 0000035E FF36[0E00]          <1> push word %1
+    42 00000362 6A00                <1> push word %2
+    43 00000364 6A36                <1> push word %3
+    44                              <1> 
+    45 00000366 5A                  <1> pop dx
+    46 00000367 59                  <1> pop cx
+    47 00000368 5B                  <1> pop bx
+    48 00000369 B80042              <1> mov ax, 0x4200
+    49 0000036C CD21                <1> int 0x21
+    50 0000036E 5B                  <1> pop bx
+    51 0000036F 59                  <1> pop cx
+   168                                  
+   169                                      ; Read Pallete
+   170                                      readfile [bg_handle], 256*4, buffer
+    26 00000370 60                  <1> pusha
+    27 00000371 8B1E[0E00]          <1> mov bx, %1
+    28 00000375 B90004              <1> mov cx, %2
+    29 00000378 BA[810F]            <1> mov dx, %3
+    30 0000037B B43F                <1> mov ah, 0x3F
+    31 0000037D CD21                <1> int 0x21
+    32 0000037F 61                  <1> popa
+   171                                  
+   172                                      ; Load The Palette
+   173 00000380 B90001                      mov cx, 256;
+   174 00000383 BB0000                      mov bx, 0;
+   175 00000386 BE[810F]                    mov si, buffer
+   176                                      .palleteLoop:
+   177 00000389 51                              push cx
+   178 0000038A B81010                          mov ax, 0x1010
+   179 0000038D 8A7402                          mov dh, [si+2]
+   180 00000390 C0EE02                          shr dh, 2
+   181 00000393 8A6C01                          mov ch, [si+1]
+   182 00000396 C0ED02                          shr ch, 2
+   183 00000399 8A0C                            mov cl, [si+0]
+   184 0000039B C0E902                          shr cl, 2
+   185 0000039E 803C00                          cmp byte [si+0], 0
+   186 000003A1 7510                            jne .noMatch
+   187 000003A3 807C0100                        cmp byte [si+1], 0
+   188 000003A7 750A                            jne .noMatch
+   189 000003A9 807C0287                        cmp byte [si+2], 135
+   190 000003AD 7504                            jne .noMatch
+   191 000003AF 881E[8D00]                          mov [transparentColor], bl
+   192                                          .noMatch:
+   193 000003B3 CD10                            int 0x10;
+   194 000003B5 59                              pop cx
+   195 000003B6 83C604                          add si, 4;
+   196 000003B9 43                              inc bx;
+   197 000003BA E2CD                            loop .palleteLoop
+   198                                  
+   199                                      
+   200 000003BC B800A0                      mov ax, 0xA000
+   201 000003BF 8EC0                        mov es, ax
+   202 000003C1 B9C800                      mov cx, 200
+   203 000003C4 BFC0F8                      mov di, 64000-320
+   204                                      .readScreen:
+   205 000003C7 51                              push cx
+   206                                  
+   207                                          readfile [bg_handle], 320, buffer
+    26 000003C8 60                  <1> pusha
+    27 000003C9 8B1E[0E00]          <1> mov bx, %1
+    28 000003CD B94001              <1> mov cx, %2
+    29 000003D0 BA[810F]            <1> mov dx, %3
+    30 000003D3 B43F                <1> mov ah, 0x3F
+    31 000003D5 CD21                <1> int 0x21
+    32 000003D7 61                  <1> popa
+   208 000003D8 BE[810F]                        mov si, buffer
+   209 000003DB B94001                          mov cx, 320
+   210                                          .readLine:
+   211 000003DE 8A04                                mov al, [si]
+   212 000003E0 3A06[0300]                          cmp al, [transparent_pallette]
+   213 000003E4 7403                                jz .dontPrint
+   214 000003E6 268805                              mov [es:di], al
+   215                                              .dontPrint:
+   216 000003E9 47                                  inc di
+   217 000003EA 46                                  inc si
+   218 000003EB E2F1                                loop .readLine
+   219                                  
+   220 000003ED 59                              pop cx
+   221 000003EE 81EF8002                        sub di, 320+320
+   222 000003F2 E2D3                            loop .readScreen
+   223                                      
+   224 000003F4 61                          popa
+   225 000003F5 C3                          ret
+   226                                  
+   227                                  drawStartScreen:
+   228 000003F6 60                          pusha
+   229                                  
+   230                                      ; Read the BMP header
+   231                                      setCursor [start_screen_handle], 0, 54
+    38 000003F7 53                  <1> push bx
+    39 000003F8 51                  <1> push cx
+    40                              <1> 
+    41 000003F9 FF36[3700]          <1> push word %1
+    42 000003FD 6A00                <1> push word %2
+    43 000003FF 6A36                <1> push word %3
+    44                              <1> 
+    45 00000401 5A                  <1> pop dx
+    46 00000402 59                  <1> pop cx
+    47 00000403 5B                  <1> pop bx
+    48 00000404 B80042              <1> mov ax, 0x4200
+    49 00000407 CD21                <1> int 0x21
+    50 00000409 5B                  <1> pop bx
+    51 0000040A 59                  <1> pop cx
+   232                                  
+   233                                      ; Read Pallete
+   234                                      readfile [start_screen_handle], 256*4, buffer
+    26 0000040B 60                  <1> pusha
+    27 0000040C 8B1E[3700]          <1> mov bx, %1
+    28 00000410 B90004              <1> mov cx, %2
+    29 00000413 BA[810F]            <1> mov dx, %3
+    30 00000416 B43F                <1> mov ah, 0x3F
+    31 00000418 CD21                <1> int 0x21
+    32 0000041A 61                  <1> popa
+   235                                  
+   236                                      ; Load The Palette
+   237 0000041B B90001                      mov cx, 256;
+   238 0000041E BB0000                      mov bx, 0;
+   239 00000421 BE[810F]                    mov si, buffer
+   240                                      .palleteLoop1:
+   241 00000424 51                              push cx
+   242 00000425 B81010                          mov ax, 0x1010
+   243 00000428 8A7402                          mov dh, [si+2]
+   244 0000042B C0EE02                          shr dh, 2
+   245 0000042E 8A6C01                          mov ch, [si+1]
+   246 00000431 C0ED02                          shr ch, 2
+   247 00000434 8A0C                            mov cl, [si+0]
+   248 00000436 C0E902                          shr cl, 2
+   249 00000439 803C00                          cmp byte [si+0], 0
+   250 0000043C 7510                            jne .noMatch1
+   251 0000043E 807C0100                        cmp byte [si+1], 0
+   252 00000442 750A                            jne .noMatch1
+   253 00000444 807C0287                        cmp byte [si+2], 135
+   254 00000448 7504                            jne .noMatch1
+   255 0000044A 881E[8D00]                          mov [transparentColor], bl
+   256                                          .noMatch1:
+   257 0000044E CD10                            int 0x10;
+   258 00000450 59                              pop cx
+   259 00000451 83C604                          add si, 4;
+   260 00000454 43                              inc bx;
+   261 00000455 E2CD                            loop .palleteLoop1
+   262                                  
+   263                                      
+   264 00000457 B800A0                      mov ax, 0xA000
+   265 0000045A 8EC0                        mov es, ax
+   266 0000045C B9C800                      mov cx, 200
+   267 0000045F BFC0F8                      mov di, 64000-320
+   268                                      .readScreen1:
+   269 00000462 51                              push cx
+   270                                  
+   271                                          readfile [start_screen_handle], 320, buffer
+    26 00000463 60                  <1> pusha
+    27 00000464 8B1E[3700]          <1> mov bx, %1
+    28 00000468 B94001              <1> mov cx, %2
+    29 0000046B BA[810F]            <1> mov dx, %3
+    30 0000046E B43F                <1> mov ah, 0x3F
+    31 00000470 CD21                <1> int 0x21
+    32 00000472 61                  <1> popa
+   272 00000473 BE[810F]                        mov si, buffer
+   273 00000476 B94001                          mov cx, 320
+   274                                          .readLine1:
+   275 00000479 8A04                                mov al, [si]
+   276 0000047B 3A06[0300]                          cmp al, [transparent_pallette]
+   277 0000047F 7403                                jz .dontPrint1
+   278 00000481 268805                              mov [es:di], al
+   279                                              .dontPrint1:
+   280 00000484 47                                  inc di
+   281 00000485 46                                  inc si
+   282 00000486 E2F1                                loop .readLine1
+   283                                  
+   284 00000488 59                              pop cx
+   285 00000489 81EF8002                        sub di, 320+320
+   286 0000048D E2D3                            loop .readScreen1
+   287                                  
+   288 0000048F 61                          popa
+   289 00000490 C3                          ret    
+   290                                  
+   291                                  Rules:
+   292 00000491 60                          pusha
+   293                                  
+   294                                      ; Read the BMP header
+   295                                      setCursor [help_screen_handle], 0, 54
+    38 00000492 53                  <1> push bx
+    39 00000493 51                  <1> push cx
+    40                              <1> 
+    41 00000494 FF36[4200]          <1> push word %1
+    42 00000498 6A00                <1> push word %2
+    43 0000049A 6A36                <1> push word %3
+    44                              <1> 
+    45 0000049C 5A                  <1> pop dx
+    46 0000049D 59                  <1> pop cx
+    47 0000049E 5B                  <1> pop bx
+    48 0000049F B80042              <1> mov ax, 0x4200
+    49 000004A2 CD21                <1> int 0x21
+    50 000004A4 5B                  <1> pop bx
+    51 000004A5 59                  <1> pop cx
+   296                                  
+   297                                      ; Read Pallete
+   298                                      readfile [help_screen_handle], 256*4, buffer
+    26 000004A6 60                  <1> pusha
+    27 000004A7 8B1E[4200]          <1> mov bx, %1
+    28 000004AB B90004              <1> mov cx, %2
+    29 000004AE BA[810F]            <1> mov dx, %3
+    30 000004B1 B43F                <1> mov ah, 0x3F
+    31 000004B3 CD21                <1> int 0x21
+    32 000004B5 61                  <1> popa
+   299                                  
+   300                                      ; Load The Palette
+   301 000004B6 B90001                      mov cx, 256;
+   302 000004B9 BB0000                      mov bx, 0;
+   303 000004BC BE[810F]                    mov si, buffer
+   304                                      .palleteLoop1:
+   305 000004BF 51                              push cx
+   306 000004C0 B81010                          mov ax, 0x1010
+   307 000004C3 8A7402                          mov dh, [si+2]
+   308 000004C6 C0EE02                          shr dh, 2
+   309 000004C9 8A6C01                          mov ch, [si+1]
+   310 000004CC C0ED02                          shr ch, 2
+   311 000004CF 8A0C                            mov cl, [si+0]
+   312 000004D1 C0E902                          shr cl, 2
+   313 000004D4 803C00                          cmp byte [si+0], 0
+   314 000004D7 7510                            jne .noMatch1
+   315 000004D9 807C0100                        cmp byte [si+1], 0
+   316 000004DD 750A                            jne .noMatch1
+   317 000004DF 807C0287                        cmp byte [si+2], 135
+   318 000004E3 7504                            jne .noMatch1
+   319 000004E5 881E[8D00]                          mov [transparentColor], bl
+   320                                          .noMatch1:
+   321 000004E9 CD10                            int 0x10;
+   322 000004EB 59                              pop cx
+   323 000004EC 83C604                          add si, 4;
+   324 000004EF 43                              inc bx;
+   325 000004F0 E2CD                            loop .palleteLoop1
+   326                                  
+   327                                      
+   328 000004F2 B800A0                      mov ax, 0xA000
+   329 000004F5 8EC0                        mov es, ax
+   330 000004F7 B9C800                      mov cx, 200
+   331 000004FA BFC0F8                      mov di, 64000-320
+   332                                      .readScreen1:
+   333 000004FD 51                              push cx
+   334                                  
+   335                                          readfile [help_screen_handle], 320, buffer
+    26 000004FE 60                  <1> pusha
+    27 000004FF 8B1E[4200]          <1> mov bx, %1
+    28 00000503 B94001              <1> mov cx, %2
+    29 00000506 BA[810F]            <1> mov dx, %3
+    30 00000509 B43F                <1> mov ah, 0x3F
+    31 0000050B CD21                <1> int 0x21
+    32 0000050D 61                  <1> popa
+   336 0000050E BE[810F]                        mov si, buffer
+   337 00000511 B94001                          mov cx, 320
+   338                                          .readLine1:
+   339 00000514 8A04                                mov al, [si]
+   340 00000516 3A06[0300]                          cmp al, [transparent_pallette]
+   341 0000051A 7403                                jz .dontPrint1
+   342 0000051C 268805                              mov [es:di], al
+   343                                              .dontPrint1:
+   344 0000051F 47                                  inc di
+   345 00000520 46                                  inc si
+   346 00000521 E2F1                                loop .readLine1
+   347                                  
+   348 00000523 59                              pop cx
+   349 00000524 81EF8002                        sub di, 320+320
+   350 00000528 E2D3                            loop .readScreen1
+   351                                      
+   352 0000052A 61                          popa
+   353 0000052B C3                          ret
+   354                                  
+   355                                  gameOverscreen:
+   356 0000052C 60                             pusha
+   357                                  
+   358                                      ; Read the BMP header
+   359                                      setCursor [gameOverScreen_handle], 0, 54
+    38 0000052D 53                  <1> push bx
+    39 0000052E 51                  <1> push cx
+    40                              <1> 
+    41 0000052F FF36[5100]          <1> push word %1
+    42 00000533 6A00                <1> push word %2
+    43 00000535 6A36                <1> push word %3
+    44                              <1> 
+    45 00000537 5A                  <1> pop dx
+    46 00000538 59                  <1> pop cx
+    47 00000539 5B                  <1> pop bx
+    48 0000053A B80042              <1> mov ax, 0x4200
+    49 0000053D CD21                <1> int 0x21
+    50 0000053F 5B                  <1> pop bx
+    51 00000540 59                  <1> pop cx
+   360                                  
+   361                                      ; Read Pallete
+   362                                      readfile [gameOverScreen_handle], 256*4, buffer
+    26 00000541 60                  <1> pusha
+    27 00000542 8B1E[5100]          <1> mov bx, %1
+    28 00000546 B90004              <1> mov cx, %2
+    29 00000549 BA[810F]            <1> mov dx, %3
+    30 0000054C B43F                <1> mov ah, 0x3F
+    31 0000054E CD21                <1> int 0x21
+    32 00000550 61                  <1> popa
+   363                                  
+   364                                      ; Load The Palette
+   365 00000551 B90001                      mov cx, 256;
+   366 00000554 BB0000                      mov bx, 0;
+   367 00000557 BE[810F]                    mov si, buffer
+   368                                      .palleteLoop1:
+   369 0000055A 51                              push cx
+   370 0000055B B81010                          mov ax, 0x1010
+   371 0000055E 8A7402                          mov dh, [si+2]
+   372 00000561 C0EE02                          shr dh, 2
+   373 00000564 8A6C01                          mov ch, [si+1]
+   374 00000567 C0ED02                          shr ch, 2
+   375 0000056A 8A0C                            mov cl, [si+0]
+   376 0000056C C0E902                          shr cl, 2
+   377 0000056F 803C00                          cmp byte [si+0], 0
+   378 00000572 7510                            jne .noMatch1
+   379 00000574 807C0100                        cmp byte [si+1], 0
+   380 00000578 750A                            jne .noMatch1
+   381 0000057A 807C0287                        cmp byte [si+2], 135
+   382 0000057E 7504                            jne .noMatch1
+   383 00000580 881E[8D00]                          mov [transparentColor], bl
+   384                                          .noMatch1:
+   385 00000584 CD10                            int 0x10;
+   386 00000586 59                              pop cx
+   387 00000587 83C604                          add si, 4;
+   388 0000058A 43                              inc bx;
+   389 0000058B E2CD                            loop .palleteLoop1
+   390                                  
+   391                                      
+   392 0000058D B800A0                      mov ax, 0xA000
+   393 00000590 8EC0                        mov es, ax
+   394 00000592 B9C800                      mov cx, 200
+   395 00000595 BFC0F8                      mov di, 64000-320
+   396                                      .readScreen1:
+   397 00000598 51                              push cx
+   398                                  
+   399                                          readfile [gameOverScreen_handle], 320, buffer
+    26 00000599 60                  <1> pusha
+    27 0000059A 8B1E[5100]          <1> mov bx, %1
+    28 0000059E B94001              <1> mov cx, %2
+    29 000005A1 BA[810F]            <1> mov dx, %3
+    30 000005A4 B43F                <1> mov ah, 0x3F
+    31 000005A6 CD21                <1> int 0x21
+    32 000005A8 61                  <1> popa
+   400 000005A9 BE[810F]                        mov si, buffer
+   401 000005AC B94001                          mov cx, 320
+   402                                          .readLine1:
+   403 000005AF 8A04                                mov al, [si]
+   404 000005B1 3A06[0300]                          cmp al, [transparent_pallette]
+   405 000005B5 7403                                jz .dontPrint1
+   406 000005B7 268805                              mov [es:di], al
+   407                                              .dontPrint1:
+   408 000005BA 47                                  inc di
+   409 000005BB 46                                  inc si
+   410 000005BC E2F1                                loop .readLine1
+   411                                  
+   412 000005BE 59                              pop cx
+   413 000005BF 81EF8002                        sub di, 320+320
+   414 000005C3 E2D3                            loop .readScreen1
+   415                                  
+   416 000005C5 B20D                            mov dl, 13      ; Set cursor position(col)
+   417 000005C7 B603                            mov dh, 3      ; Set cursor position(row)
+   418 000005C9 B700                            mov bh, 0
+   419 000005CB B402                            mov ah, 02h
+   420 000005CD CD10                            int 0x10
+   421 000005CF B409                            mov ah, 0x09
+   422 000005D1 8D16[9400]                      lea dx, scoreMessage
+   423 000005D5 CD21                            int 0x21
+   424                                      
+   425 000005D7 E85807                          call printEndScore
+   426 000005DA 61                          popa
+   427 000005DB C3                          ret 
+   428                                  
+   429                                  checkBirdInPillar:
+   430 000005DC 55                          push bp
+   431 000005DD 89E5                        mov bp, sp
+   432 000005DF 60                          pusha
+   433                                  
+   434 000005E0 C746040000                  mov word [bp+4], 0
+   435                                  
+   436 000005E5 A1[5500]                    mov ax, [bird_column]
+   437 000005E8 3B06[5700]                  cmp ax, [pillar_columns+0]
+   438 000005EC 7C0E                        jl .skipPillar0
+   439 000005EE 83E820                      sub ax, PILLAR_WIDTH
+   440 000005F1 3B06[5700]                  cmp ax, [pillar_columns+0]
+   441 000005F5 7F05                        jg .skipPillar0
+   442 000005F7 C74604FFFF                      mov word [bp+4], -1
+   443                                      .skipPillar0:
+   444                                  
+   445 000005FC A1[5500]                    mov ax, [bird_column]
+   446 000005FF 3B06[5900]                  cmp ax, [pillar_columns+2]
+   447 00000603 7C0E                        jl .skipPillar1
+   448 00000605 83E820                      sub ax, PILLAR_WIDTH
+   449 00000608 3B06[5900]                  cmp ax, [pillar_columns+2]
+   450 0000060C 7F05                        jg .skipPillar1
+   451 0000060E C74604FFFF                      mov word [bp+4], -1
+   452                                      .skipPillar1:
+   453                                  
+   454                                          
+   455 00000613 A1[5500]                    mov ax, [bird_column]
+   456 00000616 3B06[5B00]                  cmp ax, [pillar_columns+4]
+   457 0000061A 7C0E                        jl .skipPillar2
+   458 0000061C 83E820                      sub ax, PILLAR_WIDTH
+   459 0000061F 3B06[5B00]                  cmp ax, [pillar_columns+4]
+   460 00000623 7F05                        jg .skipPillar2
+   461 00000625 C74604FFFF                      mov word [bp+4], -1
+   462                                      .skipPillar2:
+   463                                          
+   464 0000062A 61                          popa
+   465 0000062B 89EC                        mov sp, bp
+   466 0000062D 5D                          pop bp
+   467 0000062E C3                          ret
+   468                                  
+   469                                  drawBird:
+   470 0000062F 55                          push bp
+   471 00000630 89E5                        mov bp, sp
+   472 00000632 60                          pusha
+   473                                  
+   474 00000633 83EC02                      sub sp, 2
+   475 00000636 E8A3FF                      call checkBirdInPillar
+   476 00000639 58                          pop ax
+   477 0000063A 83F800                      cmp ax, 0
+   478 0000063D 7415                        je .notInPillar
+   479 0000063F 803E[8C00]00                    cmp byte [scoreAdded], 0
+   480 00000644 7513                            jne .afterPillarCheck
+   481 00000646 FF06[8A00]                      inc word [score]
+   482 0000064A C606[8C00]01                    mov byte [scoreAdded], 1
+   483 0000064F E8CCFC                          call play_crash_sound 
+   484                                          ; popa
+   485                                          ; mov sp, bp
+   486                                          ; pop bp
+   487                                          ; ret
+   488 00000652 EB05                            jmp .afterPillarCheck
+   489                                      .notInPillar:
+   490 00000654 C606[8C00]00                    mov byte [scoreAdded], 0
+   491                                      .afterPillarCheck:
+   492                                  
+   493                                      setCursor [bird_handle], 0, 54+256*4
+    38 00000659 53                  <1> push bx
+    39 0000065A 51                  <1> push cx
+    40                              <1> 
+    41 0000065B FF36[1900]          <1> push word %1
+    42 0000065F 6A00                <1> push word %2
+    43 00000661 683604              <1> push word %3
+    44                              <1> 
+    45 00000664 5A                  <1> pop dx
+    46 00000665 59                  <1> pop cx
+    47 00000666 5B                  <1> pop bx
+    48 00000667 B80042              <1> mov ax, 0x4200
+    49 0000066A CD21                <1> int 0x21
+    50 0000066C 5B                  <1> pop bx
+    51 0000066D 59                  <1> pop cx
+   494 0000066E B800A0                      mov ax, 0xA000
+   495 00000671 8EC0                        mov es, ax
+   496 00000673 A1[5300]                    mov ax, [bird_row]
+   497 00000676 BB4001                      mov bx, 320
+   498 00000679 F7E3                        mul bx
+   499 0000067B 0306[5500]                  add ax, [bird_column]
+   500 0000067F 89C7                        mov di, ax
+   501 00000681 B91800                      mov cx, BIRD_HEIGHT
+   502 00000684 C606[6400]00                mov byte [collsionFlag], 0
+   503                                      .readScreen:
+   504 00000689 51                              push cx
+   505                                  
+   506                                          readfile [bird_handle], BIRD_WIDTH, buffer
+    26 0000068A 60                  <1> pusha
+    27 0000068B 8B1E[1900]          <1> mov bx, %1
+    28 0000068F B92000              <1> mov cx, %2
+    29 00000692 BA[810F]            <1> mov dx, %3
+    30 00000695 B43F                <1> mov ah, 0x3F
+    31 00000697 CD21                <1> int 0x21
+    32 00000699 61                  <1> popa
+   507 0000069A BE[810F]                        mov si, buffer
+   508 0000069D B92000                          mov cx, BIRD_WIDTH
+   509                                          .readLine:
+   510 000006A0 8A04                                mov al, [si]
+   511 000006A2 3A06[0300]                          cmp al, [transparent_pallette]
+   512 000006A6 7413                                jz .dontPrint
+   513 000006A8 50                                  push ax
+   514 000006A9 268A05                              mov al, [es:di]
+   515 000006AC 3A06[C100]                          cmp al, [PILLAR_OUTLINE_COLOR]
+   516 000006B0 7505                                jne .noCollision
+   517 000006B2 C606[6400]01                            mov byte [collsionFlag], 1
+   518                                              .noCollision:
+   519 000006B7 58                                  pop ax
+   520 000006B8 268805                              mov [es:di], al
+   521                                              .dontPrint:
+   522 000006BB 47                                  inc di
+   523 000006BC 46                                  inc si
+   524 000006BD E2E1                                loop .readLine
+   525                                  
+   526 000006BF 59                              pop cx
+   527 000006C0 81EF6001                        sub di, 320+BIRD_WIDTH
+   528 000006C4 E2C3                            loop .readScreen
+   529                                          
+   530 000006C6 61                          popa
+   531 000006C7 89EC                        mov sp, bp
+   532 000006C9 5D                          pop bp
+   533 000006CA C3                          ret
+   534                                  
+   535                                  ; BP+4 => Pillar Row
+   536                                  ; BP+6 => Pillar Column
+   537                                  ; BP+8 => Pillar Height
+   538                                  drawUpPillar:
+   539 000006CB 55                          push bp
+   540 000006CC 89E5                        mov bp, sp
+   541 000006CE 60                          pusha
+   542                                  
+   543 000006CF B88000                      mov ax, PILLAR_HEIGHT
+   544 000006D2 2B4608                      sub ax, [BP+8]
+   545 000006D5 BB2000                      mov bx, PILLAR_WIDTH
+   546 000006D8 F7E3                        mul bx
+   547 000006DA 053604                      add ax, 54+256*4
+   548 000006DD 83D000                      adc ax, 0
+   549                                  
+   550                                      setCursor [pillar_handle], dx, ax
+    38 000006E0 53                  <1> push bx
+    39 000006E1 51                  <1> push cx
+    40                              <1> 
+    41 000006E2 FF36[2200]          <1> push word %1
+    42 000006E6 52                  <1> push word %2
+    43 000006E7 50                  <1> push word %3
+    44                              <1> 
+    45 000006E8 5A                  <1> pop dx
+    46 000006E9 59                  <1> pop cx
+    47 000006EA 5B                  <1> pop bx
+    48 000006EB B80042              <1> mov ax, 0x4200
+    49 000006EE CD21                <1> int 0x21
+    50 000006F0 5B                  <1> pop bx
+    51 000006F1 59                  <1> pop cx
+   551 000006F2 B800A0                      mov ax, 0xA000
+   552 000006F5 8EC0                        mov es, ax
+   553 000006F7 8B4604                      mov ax, [BP+4]
+   554 000006FA BB4001                      mov bx, 320
+   555 000006FD F7E3                        mul bx
+   556 000006FF 034606                      add ax, [BP+6]
+   557 00000702 89C7                        mov di, ax
+   558 00000704 8B4E08                      mov cx, [BP+8]
+   559                                      .readScreen:
+   560 00000707 51                              push cx
+   561                                  
+   562                                          readfile [pillar_handle], PILLAR_WIDTH, buffer
+    26 00000708 60                  <1> pusha
+    27 00000709 8B1E[2200]          <1> mov bx, %1
+    28 0000070D B92000              <1> mov cx, %2
+    29 00000710 BA[810F]            <1> mov dx, %3
+    30 00000713 B43F                <1> mov ah, 0x3F
+    31 00000715 CD21                <1> int 0x21
+    32 00000717 61                  <1> popa
+   563 00000718 BE[810F]                        mov si, buffer
+   564 0000071B B92000                          mov cx, PILLAR_WIDTH
+   565                                          .readLine:
+   566 0000071E 8A04                                mov al, [si]
+   567 00000720 3A06[0300]                          cmp al, [transparent_pallette]
+   568 00000724 7403                                jz .dontPrint
+   569 00000726 268805                              mov [es:di], al
+   570                                              .dontPrint:
+   571 00000729 47                                  inc di
+   572 0000072A 46                                  inc si
+   573 0000072B E2F1                                loop .readLine
+   574                                  
+   575 0000072D 59                              pop cx
+   576 0000072E 81EF6001                        sub di, 320+PILLAR_WIDTH
+   577 00000732 E2D3                            loop .readScreen
+   578                                  
+   579 00000734 61                          popa
+   580 00000735 89EC                        mov sp, bp
+   581 00000737 5D                          pop bp
+   582 00000738 C20600                      ret 6
+   583                                  
+   584                                  ; BP+4 => Pillar Column
+   585                                  ; BP+6 => Pillar Height
+   586                                  drawDownPillar:
+   587 0000073B 55                          push bp
+   588 0000073C 89E5                        mov bp, sp
+   589 0000073E 60                          pusha
+   590                                  
+   591                                      setCursor [down_pillar_handle], 0, 54+256*4
+    38 0000073F 53                  <1> push bx
+    39 00000740 51                  <1> push cx
+    40                              <1> 
+    41 00000741 FF36[2B00]          <1> push word %1
+    42 00000745 6A00                <1> push word %2
+    43 00000747 683604              <1> push word %3
+    44                              <1> 
+    45 0000074A 5A                  <1> pop dx
+    46 0000074B 59                  <1> pop cx
+    47 0000074C 5B                  <1> pop bx
+    48 0000074D B80042              <1> mov ax, 0x4200
+    49 00000750 CD21                <1> int 0x21
+    50 00000752 5B                  <1> pop bx
+    51 00000753 59                  <1> pop cx
+   592 00000754 B800A0                      mov ax, 0xA000
+   593 00000757 8EC0                        mov es, ax
+   594 00000759 8B4606                      mov ax, [BP+6]
+   595 0000075C BB4001                      mov bx, 320
+   596 0000075F F7E3                        mul bx
+   597 00000761 034604                      add ax, [BP+4]
+   598 00000764 89C7                        mov di, ax
+   599 00000766 8B4E06                      mov cx, [BP+6]
+   600                                      .readScreen:
+   601 00000769 51                              push cx
+   602                                  
+   603                                          readfile [down_pillar_handle], PILLAR_WIDTH, buffer
+    26 0000076A 60                  <1> pusha
+    27 0000076B 8B1E[2B00]          <1> mov bx, %1
+    28 0000076F B92000              <1> mov cx, %2
+    29 00000772 BA[810F]            <1> mov dx, %3
+    30 00000775 B43F                <1> mov ah, 0x3F
+    31 00000777 CD21                <1> int 0x21
+    32 00000779 61                  <1> popa
+   604 0000077A BE[810F]                        mov si, buffer
+   605 0000077D B92000                          mov cx, PILLAR_WIDTH
+   606                                          .readLine:
+   607 00000780 8A04                                mov al, [si]
+   608 00000782 3A06[0300]                          cmp al, [transparent_pallette]
+   609 00000786 7403                                jz .dontPrint
+   610 00000788 268805                              mov [es:di], al
+   611                                              .dontPrint:
+   612 0000078B 47                                  inc di
+   613 0000078C 46                                  inc si
+   614 0000078D E2F1                                loop .readLine
+   615                                  
+   616 0000078F 59                              pop cx
+   617 00000790 81EF6001                        sub di, 320+PILLAR_WIDTH
+   618 00000794 E2D3                            loop .readScreen
+   619                                  
+   620 00000796 61                          popa
+   621 00000797 89EC                        mov sp, bp
+   622 00000799 5D                          pop bp
+   623 0000079A C20400                      ret 4
+   624                                  
+   625                                  ; BP+4 => Pillar Column
+   626                                  ; BP+6 => Pillar Height
+   627                                  drawBackgroundInDownPillarPlace:
+   628 0000079D 55                          push bp
+   629 0000079E 89E5                        mov bp, sp
+   630 000007A0 60                          pusha
+   631                                  
+   632                                      setCursor [down_pillar_handle], 0, 54+256*4
+    38 000007A1 53                  <1> push bx
+    39 000007A2 51                  <1> push cx
+    40                              <1> 
+    41 000007A3 FF36[2B00]          <1> push word %1
+    42 000007A7 6A00                <1> push word %2
+    43 000007A9 683604              <1> push word %3
+    44                              <1> 
+    45 000007AC 5A                  <1> pop dx
+    46 000007AD 59                  <1> pop cx
+    47 000007AE 5B                  <1> pop bx
+    48 000007AF B80042              <1> mov ax, 0x4200
+    49 000007B2 CD21                <1> int 0x21
+    50 000007B4 5B                  <1> pop bx
+    51 000007B5 59                  <1> pop cx
+   633                                  
+   634 000007B6 B800A0                      mov ax, 0xA000
+   635 000007B9 8EC0                        mov es, ax
+   636 000007BB 8B4606                      mov ax, [BP+6]
+   637 000007BE BB4001                      mov bx, 320
+   638 000007C1 F7E3                        mul bx
+   639 000007C3 BAF6FC                      mov dx, 54+256*4 + 199*320
+   640 000007C6 29C2                        sub dx, ax
+   641 000007C8 035604                      add dx, [BP+4]
+   642 000007CB 034604                      add ax, [BP+4]
+   643 000007CE 89C7                        mov di, ax
+   644 000007D0 89D6                        mov si, dx
+   645                                  
+   646                                      setCursor [bg_handle], 0, si
+    38 000007D2 53                  <1> push bx
+    39 000007D3 51                  <1> push cx
+    40                              <1> 
+    41 000007D4 FF36[0E00]          <1> push word %1
+    42 000007D8 6A00                <1> push word %2
+    43 000007DA 56                  <1> push word %3
+    44                              <1> 
+    45 000007DB 5A                  <1> pop dx
+    46 000007DC 59                  <1> pop cx
+    47 000007DD 5B                  <1> pop bx
+    48 000007DE B80042              <1> mov ax, 0x4200
+    49 000007E1 CD21                <1> int 0x21
+    50 000007E3 5B                  <1> pop bx
+    51 000007E4 59                  <1> pop cx
+   647 000007E5 8B4E06                      mov cx, [BP+6]
+   648                                      .readScreen:
+   649 000007E8 51                              push cx
+   650                                  
+   651                                          readfile [down_pillar_handle], PILLAR_WIDTH, buffer
+    26 000007E9 60                  <1> pusha
+    27 000007EA 8B1E[2B00]          <1> mov bx, %1
+    28 000007EE B92000              <1> mov cx, %2
+    29 000007F1 BA[810F]            <1> mov dx, %3
+    30 000007F4 B43F                <1> mov ah, 0x3F
+    31 000007F6 CD21                <1> int 0x21
+    32 000007F8 61                  <1> popa
+   652                                          readfile [bg_handle], 320, buffer+PILLAR_WIDTH
+    26 000007F9 60                  <1> pusha
+    27 000007FA 8B1E[0E00]          <1> mov bx, %1
+    28 000007FE B94001              <1> mov cx, %2
+    29 00000801 BA[A10F]            <1> mov dx, %3
+    30 00000804 B43F                <1> mov ah, 0x3F
+    31 00000806 CD21                <1> int 0x21
+    32 00000808 61                  <1> popa
+   653 00000809 BE[810F]                        mov si, buffer
+   654 0000080C BB[A10F]                        mov bx, buffer+PILLAR_WIDTH
+   655 0000080F B92000                          mov cx, PILLAR_WIDTH
+   656                                          .readLine:
+   657 00000812 8A04                                mov al, [si]
+   658 00000814 3A06[0300]                          cmp al, [transparent_pallette]
+   659 00000818 7405                                je .dontPrint
+   660 0000081A 8A07                                mov al, [bx]
+   661 0000081C 268805                              mov [es:di], al
+   662                                              .dontPrint:
+   663 0000081F 47                                  inc di
+   664 00000820 46                                  inc si
+   665 00000821 43                                  inc bx
+   666 00000822 E2EE                                loop .readLine
+   667                                  
+   668 00000824 59                              pop cx
+   669 00000825 81EF6001                        sub di, 320+PILLAR_WIDTH
+   670 00000829 E2BD                            loop .readScreen
+   671                                  
+   672 0000082B 61                          popa
+   673 0000082C 89EC                        mov sp, bp
+   674 0000082E 5D                          pop bp
+   675 0000082F C20400                      ret 4
+   676                                  
+   677                                  ; BP+4 => Pillar Row
+   678                                  ; BP+6 => Pillar Column
+   679                                  ; BP+8 => Pillar Height
+   680                                  drawBackgroundInUpPillarPlace:
+   681 00000832 55                          push bp
+   682 00000833 89E5                        mov bp, sp
+   683 00000835 60                          pusha
+   684                                  
+   685 00000836 B88000                      mov ax, PILLAR_HEIGHT
+   686 00000839 2B4608                      sub ax, [BP+8]
+   687 0000083C BB2000                      mov bx, PILLAR_WIDTH
+   688 0000083F F7E3                        mul bx
+   689 00000841 053604                      add ax, 54+256*4
+   690 00000844 83D000                      adc ax, 0
+   691                                  
+   692                                      setCursor [pillar_handle], dx, ax
+    38 00000847 53                  <1> push bx
+    39 00000848 51                  <1> push cx
+    40                              <1> 
+    41 00000849 FF36[2200]          <1> push word %1
+    42 0000084D 52                  <1> push word %2
+    43 0000084E 50                  <1> push word %3
+    44                              <1> 
+    45 0000084F 5A                  <1> pop dx
+    46 00000850 59                  <1> pop cx
+    47 00000851 5B                  <1> pop bx
+    48 00000852 B80042              <1> mov ax, 0x4200
+    49 00000855 CD21                <1> int 0x21
+    50 00000857 5B                  <1> pop bx
+    51 00000858 59                  <1> pop cx
+   693                                  
+   694 00000859 B800A0                      mov ax, 0xA000
+   695 0000085C 8EC0                        mov es, ax
+   696 0000085E 8B4604                      mov ax, [BP+4]
+   697 00000861 BB4001                      mov bx, 320
+   698 00000864 F7E3                        mul bx
+   699 00000866 BAF6FC                      mov dx, 54+256*4 + 199*320
+   700 00000869 29C2                        sub dx, ax
+   701 0000086B 035606                      add dx, [BP+6]
+   702 0000086E 034606                      add ax, [BP+6]
+   703 00000871 89C7                        mov di, ax
+   704 00000873 89D6                        mov si, dx
+   705                                  
+   706                                      setCursor [bg_handle], 0, si
+    38 00000875 53                  <1> push bx
+    39 00000876 51                  <1> push cx
+    40                              <1> 
+    41 00000877 FF36[0E00]          <1> push word %1
+    42 0000087B 6A00                <1> push word %2
+    43 0000087D 56                  <1> push word %3
+    44                              <1> 
+    45 0000087E 5A                  <1> pop dx
+    46 0000087F 59                  <1> pop cx
+    47 00000880 5B                  <1> pop bx
+    48 00000881 B80042              <1> mov ax, 0x4200
+    49 00000884 CD21                <1> int 0x21
+    50 00000886 5B                  <1> pop bx
+    51 00000887 59                  <1> pop cx
+   707 00000888 8B4E08                      mov cx, [BP+8]
+   708                                      .readScreen:
+   709 0000088B 51                              push cx
+   710                                  
+   711                                          readfile [pillar_handle], PILLAR_WIDTH, buffer
+    26 0000088C 60                  <1> pusha
+    27 0000088D 8B1E[2200]          <1> mov bx, %1
+    28 00000891 B92000              <1> mov cx, %2
+    29 00000894 BA[810F]            <1> mov dx, %3
+    30 00000897 B43F                <1> mov ah, 0x3F
+    31 00000899 CD21                <1> int 0x21
+    32 0000089B 61                  <1> popa
+   712                                          readfile [bg_handle], 320, buffer+PILLAR_WIDTH
+    26 0000089C 60                  <1> pusha
+    27 0000089D 8B1E[0E00]          <1> mov bx, %1
+    28 000008A1 B94001              <1> mov cx, %2
+    29 000008A4 BA[A10F]            <1> mov dx, %3
+    30 000008A7 B43F                <1> mov ah, 0x3F
+    31 000008A9 CD21                <1> int 0x21
+    32 000008AB 61                  <1> popa
+   713 000008AC BE[810F]                        mov si, buffer
+   714 000008AF BB[A10F]                        mov bx, buffer+PILLAR_WIDTH
+   715 000008B2 B92000                          mov cx, PILLAR_WIDTH
+   716                                          .readLine:
+   717 000008B5 8A04                                mov al, [si]
+   718 000008B7 3A06[0300]                          cmp al, [transparent_pallette]
+   719 000008BB 7405                                je .dontPrint
+   720 000008BD 8A07                                mov al, [bx]
+   721 000008BF 268805                              mov [es:di], al
+   722                                              .dontPrint:
+   723 000008C2 47                                  inc di
+   724 000008C3 46                                  inc si
+   725 000008C4 43                                  inc bx
+   726 000008C5 E2EE                                loop .readLine
+   727                                  
+   728 000008C7 59                              pop cx
+   729 000008C8 81EF6001                        sub di, 320+PILLAR_WIDTH
+   730 000008CC E2BD                            loop .readScreen
+   731                                  
+   732 000008CE 61                          popa
+   733 000008CF 89EC                        mov sp, bp
+   734 000008D1 5D                          pop bp
+   735 000008D2 C20600                      ret 6
+   736                                  
+   737                                  drawBackgroundInBirdPlace:
+   738 000008D5 60                          pusha
+   739                                  
+   740 000008D6 B800A0                      mov ax, 0xA000
+   741 000008D9 8EC0                        mov es, ax
+   742 000008DB A1[5300]                    mov ax, [bird_row]
+   743 000008DE BB4001                      mov bx, 320
+   744 000008E1 F7E3                        mul bx
+   745 000008E3 BAF6FC                      mov dx, 54+256*4 + 199*320
+   746 000008E6 29C2                        sub dx, ax
+   747 000008E8 0316[5500]                  add dx, [bird_column]
+   748 000008EC 0306[5500]                  add ax, [bird_column]
+   749 000008F0 89C7                        mov di, ax
+   750 000008F2 89D6                        mov si, dx
+   751                                  
+   752                                      setCursor [bird_handle], 0, 54+256*4
+    38 000008F4 53                  <1> push bx
+    39 000008F5 51                  <1> push cx
+    40                              <1> 
+    41 000008F6 FF36[1900]          <1> push word %1
+    42 000008FA 6A00                <1> push word %2
+    43 000008FC 683604              <1> push word %3
+    44                              <1> 
+    45 000008FF 5A                  <1> pop dx
+    46 00000900 59                  <1> pop cx
+    47 00000901 5B                  <1> pop bx
+    48 00000902 B80042              <1> mov ax, 0x4200
+    49 00000905 CD21                <1> int 0x21
+    50 00000907 5B                  <1> pop bx
+    51 00000908 59                  <1> pop cx
+   753                                      setCursor [bg_handle], 0, si
+    38 00000909 53                  <1> push bx
+    39 0000090A 51                  <1> push cx
+    40                              <1> 
+    41 0000090B FF36[0E00]          <1> push word %1
+    42 0000090F 6A00                <1> push word %2
+    43 00000911 56                  <1> push word %3
+    44                              <1> 
+    45 00000912 5A                  <1> pop dx
+    46 00000913 59                  <1> pop cx
+    47 00000914 5B                  <1> pop bx
+    48 00000915 B80042              <1> mov ax, 0x4200
+    49 00000918 CD21                <1> int 0x21
+    50 0000091A 5B                  <1> pop bx
+    51 0000091B 59                  <1> pop cx
+   754 0000091C B91800                      mov cx, BIRD_HEIGHT
+   755                                      .readScreen:
+   756 0000091F 51                              push cx
+   757                                  
+   758                                          readfile [bird_handle], BIRD_WIDTH, buffer
+    26 00000920 60                  <1> pusha
+    27 00000921 8B1E[1900]          <1> mov bx, %1
+    28 00000925 B92000              <1> mov cx, %2
+    29 00000928 BA[810F]            <1> mov dx, %3
+    30 0000092B B43F                <1> mov ah, 0x3F
+    31 0000092D CD21                <1> int 0x21
+    32 0000092F 61                  <1> popa
+   759                                          readfile [bg_handle], 320, buffer+BIRD_WIDTH
+    26 00000930 60                  <1> pusha
+    27 00000931 8B1E[0E00]          <1> mov bx, %1
+    28 00000935 B94001              <1> mov cx, %2
+    29 00000938 BA[A10F]            <1> mov dx, %3
+    30 0000093B B43F                <1> mov ah, 0x3F
+    31 0000093D CD21                <1> int 0x21
+    32 0000093F 61                  <1> popa
+   760 00000940 BE[810F]                        mov si, buffer
+   761 00000943 BB[A10F]                        mov bx, buffer+BIRD_WIDTH
+   762 00000946 B92000                          mov cx, BIRD_WIDTH
+   763                                          .readLine:
+   764 00000949 8A04                                mov al, [si]
+   765 0000094B 3A06[0300]                          cmp al, [transparent_pallette]
+   766 0000094F 7405                                je .dontPrint
+   767 00000951 8A07                                mov al, [bx]
+   768 00000953 268805                              mov [es:di], al
+   769                                              .dontPrint:
+   770 00000956 47                                  inc di
+   771 00000957 46                                  inc si
+   772 00000958 43                                  inc bx
+   773 00000959 E2EE                                loop .readLine
+   774                                  
+   775 0000095B 59                              pop cx
+   776 0000095C 81EF6001                        sub di, 320+BIRD_WIDTH
+   777 00000960 E2BD                            loop .readScreen
+   778                                  
+   779 00000962 61                          popa
+   780 00000963 C3                          ret
+   781                                  
+   782 00000964 0000                    music_counter dw 0
+   783 00000966 00                      music_playing db 0
+   784 00000967 00                      current_note db 0
+   785 00000968 B801EE010B024B0293-     note_frequencies: dw 440, 494, 523, 587, 659, 698, 784, 880
+   785 00000971 02BA0210037003     
+   786                                  
+   787                                  
+   788                                  
+   789                                  ; PC Speaker Symphony
+   790                                  ; A multi-movement musical composition for PC speaker
+   791                                  
+   792                                  ; Frequency constants (in Hz) for different octaves
+   793                                  ; Lower octave
+   794                                  C3 equ 1193180 / 131
+   795                                  D3 equ 1193180 / 147
+   796                                  E3 equ 1193180 / 165
+   797                                  F3 equ 1193180 / 175
+   798                                  G3 equ 1193180 / 196
+   799                                  A3 equ 1193180 / 220
+   800                                  B3 equ 1193180 / 247
+   801                                  
+   802                                  ; Middle octave
+   803                                  C4 equ 1193180 / 261
+   804                                  D4 equ 1193180 / 294
+   805                                  E4 equ 1193180 / 329
+   806                                  F4 equ 1193180 / 349
+   807                                  G4 equ 1193180 / 392
+   808                                  A4 equ 1193180 / 440
+   809                                  B4 equ 1193180 / 493
+   810                                  
+   811                                  ; Higher octave
+   812                                  C5 equ 1193180 / 523
+   813                                  D5 equ 1193180 / 587
+   814                                  E5 equ 1193180 / 659
+   815                                  F5 equ 1193180 / 698
+   816                                  G5 equ 1193180 / 784
+   817                                  A5 equ 1193180 / 880
+   818                                  B5 equ 1193180 / 987
+   819                                  
+   820                                  ; Note durations
+   821                                  WHOLE equ 0FFFFh
+   822                                  HALF equ WHOLE / 2
+   823                                  QUARTER equ HALF / 2
+   824                                  EIGHTH equ QUARTER / 2
+   825                                  
+   826                                  ; Beethoven's Symphony No. 5 in C minor, Op. 67
+   827                                  ; Adapted for PC Speaker
+   828                                  ; First movement: Allegro con brio
+   829                                  
+   830                                  ; Note frequencies (Hz)
+   831                                  G3  equ 1193180 / 196
+   832                                  Gb3 equ 1193180 / 185
+   833                                  F3  equ 1193180 / 175
+   834                                  E3  equ 1193180 / 165
+   835                                  Eb3 equ 1193180 / 156
+   836                                  D3  equ 1193180 / 147
+   837                                  C3  equ 1193180 / 131
+   838                                  B3  equ 1193180 / 247
+   839                                  Bb3 equ 1193180 / 233
+   840                                  A3  equ 1193180 / 220
+   841                                  
+   842                                  ; Higher octave
+   843                                  G4  equ 1193180 / 392
+   844                                  Gb4 equ 1193180 / 370
+   845                                  F4  equ 1193180 / 349
+   846                                  E4  equ 1193180 / 329
+   847                                  Eb4 equ 1193180 / 311
+   848                                  D4  equ 1193180 / 294
+   849                                  C4  equ 1193180 / 261
+   850                                  B4  equ 1193180 / 493
+   851                                  Bb4 equ 1193180 / 466
+   852                                  A4  equ 1193180 / 440
+   853                                  Ab4 equ 1193180 / 415
+   854                                  
+   855                                  ; Note durations
+   856                                  WHOLE    equ 0FFFFh
+   857                                  HALF     equ WHOLE / 2
+   858                                  QUARTER  equ HALF / 2
+   859                                  EIGHTH   equ QUARTER / 2
+   860                                  SIXTEENTH equ EIGHTH / 2
+   861                                  
+   862                                  ; Note frequencies (Hz)
+   863                                  D4  equ 1193180 / 294
+   864                                  Db4 equ 1193180 / 277
+   865                                  C4  equ 1193180 / 261
+   866                                  B3  equ 1193180 / 247
+   867                                  Bb3 equ 1193180 / 233
+   868                                  A3  equ 1193180 / 220
+   869                                  Ab3 equ 1193180 / 208
+   870                                  G3  equ 1193180 / 196
+   871                                  F3  equ 1193180 / 175
+   872                                  E3  equ 1193180 / 165
+   873                                  Eb3 equ 1193180 / 156
+   874                                  D3  equ 1193180 / 147
+   875                                  
+   876                                  ; Higher octave
+   877                                  D5  equ 1193180 / 587
+   878                                  C5  equ 1193180 / 523
+   879                                  B4  equ 1193180 / 493
+   880                                  Bb4 equ 1193180 / 466
+   881                                  A4  equ 1193180 / 440
+   882                                  G4  equ 1193180 / 392
+   883                                  F4  equ 1193180 / 349
+   884                                  E4  equ 1193180 / 329
+   885                                  
+   886                                  play_background_music:
+   887                                      ; Initialize PIT for square wave generation
+   888 00000978 B0B6                        mov al, 0b6h
+   889 0000097A E643                        out 43h, al
+   890                                      
+   891                                      ; Main loop for the theme
+   892 0000097C B92C01                      mov cx, 300      ; Play pattern twice
+   893                                  .main_loop:
+   894 0000097F 51                          push cx
+   895                                      
+   896                                      ; First measure
+   897 00000980 B8DA0F                      mov ax, D4
+   898 00000983 E642                        out 42h, al
+   899 00000985 88E0                        mov al, ah
+   900 00000987 E642                        out 42h, al
+   901 00000989 E81902                      call turn_speaker_on
+   902 0000098C E82402                      call delay
+   903 0000098F E82102                      call delay
+   904 00000992 E81E02                      call delay
+   905 00000995 E81B02                      call delay
+   906 00000998 E81802                      call delay
+   907 0000099B E81502                      call delay
+   908 0000099E E81202                      call delay
+   909 000009A1 E80F02                      call delay
+   910 000009A4 E80C02                      call delay
+   911 000009A7 E80902                      call delay
+   912 000009AA E80602                      call delay
+   913 000009AD E80302                      call delay
+   914 000009B0 E80002                      call delay
+   915 000009B3 E8F801                      call turn_speaker_off
+   916                                      
+   917 000009B6 B8DA0F                      mov ax, D4
+   918 000009B9 E642                        out 42h, al
+   919 000009BB 88E0                        mov al, ah
+   920 000009BD E642                        out 42h, al
+   921 000009BF E8E301                      call turn_speaker_on
+   922 000009C2 E8EE01                      call delay
+   923 000009C5 E8EB01                      call delay
+   924 000009C8 E8E801                      call delay
+   925 000009CB E8E501                      call delay
+   926 000009CE E8E201                      call delay
+   927 000009D1 E8DF01                      call delay
+   928 000009D4 E8DC01                      call delay
+   929 000009D7 E8D901                      call delay
+   930 000009DA E8D601                      call delay
+   931 000009DD E8D301                      call delay
+   932 000009E0 E8D001                      call delay
+   933 000009E3 E8CD01                      call delay
+   934 000009E6 E8CA01                      call delay
+   935 000009E9 E8C201                      call turn_speaker_off
+   936                                      
+   937 000009EC B8F007                      mov ax, D5
+   938 000009EF E642                        out 42h, al
+   939 000009F1 88E0                        mov al, ah
+   940 000009F3 E642                        out 42h, al
+   941 000009F5 E8AD01                      call turn_speaker_on
+   942 000009F8 E8B801                      call delay
+   943 000009FB E8B501                      call delay
+   944 000009FE E8B201                      call delay
+   945 00000A01 E8AF01                      call delay
+   946 00000A04 E8AC01                      call delay
+   947 00000A07 E8A901                      call delay
+   948 00000A0A E8A601                      call delay
+   949 00000A0D E8A301                      call delay
+   950 00000A10 E8A001                      call delay
+   951 00000A13 E89D01                      call delay
+   952 00000A16 E89A01                      call delay
+   953 00000A19 E89701                      call delay
+   954 00000A1C E89401                      call delay
+   955 00000A1F E88C01                      call turn_speaker_off
+   956                                      
+   957 00000A22 B8970A                      mov ax, A4
+   958 00000A25 E642                        out 42h, al
+   959 00000A27 88E0                        mov al, ah
+   960 00000A29 E642                        out 42h, al
+   961 00000A2B E87701                      call turn_speaker_on
+   962 00000A2E E88201                      call delay
+   963 00000A31 E87F01                      call delay
+   964 00000A34 E87C01                      call delay
+   965 00000A37 E87901                      call delay
+   966 00000A3A E87601                      call delay
+   967 00000A3D E87301                      call delay
+   968 00000A40 E87001                      call delay
+   969 00000A43 E86D01                      call delay
+   970 00000A46 E86A01                      call delay
+   971 00000A49 E86701                      call delay
+   972 00000A4C E86401                      call delay
+   973 00000A4F E86101                      call delay
+   974 00000A52 E85E01                      call delay
+   975 00000A55 E85601                      call turn_speaker_off
+   976                                      
+   977 00000A58 B83B0B                      mov ax, Ab4
+   978 00000A5B E642                        out 42h, al
+   979 00000A5D 88E0                        mov al, ah
+   980 00000A5F E642                        out 42h, al
+   981 00000A61 E84101                      call turn_speaker_on
+   982 00000A64 E84C01                      call delay
+   983 00000A67 E84901                      call delay
+   984 00000A6A E84601                      call delay
+   985 00000A6D E84301                      call delay
+   986 00000A70 E84001                      call delay
+   987 00000A73 E83D01                      call delay
+   988 00000A76 E83A01                      call delay
+   989 00000A79 E83701                      call delay
+   990 00000A7C E83401                      call delay
+   991 00000A7F E83101                      call delay
+   992 00000A82 E82E01                      call delay
+   993 00000A85 E82B01                      call delay
+   994 00000A88 E82801                      call delay
+   995 00000A8B E82001                      call turn_speaker_off
+   996                                      
+   997 00000A8E B8E30B                      mov ax, G4
+   998 00000A91 E642                        out 42h, al
+   999 00000A93 88E0                        mov al, ah
+  1000 00000A95 E642                        out 42h, al
+  1001 00000A97 E80B01                      call turn_speaker_on
+  1002 00000A9A E81601                      call delay
+  1003 00000A9D E81301                      call delay
+  1004 00000AA0 E81001                      call delay
+  1005 00000AA3 E80D01                      call delay
+  1006 00000AA6 E80A01                      call delay
+  1007 00000AA9 E80701                      call delay
+  1008 00000AAC E80401                      call delay
+  1009 00000AAF E80101                      call delay
+  1010 00000AB2 E8FE00                      call delay
+  1011 00000AB5 E8FB00                      call delay
+  1012 00000AB8 E8F800                      call delay
+  1013 00000ABB E8F500                      call delay
+  1014 00000ABE E8F200                      call delay
+  1015 00000AC1 E8EA00                      call turn_speaker_off
+  1016                                      
+  1017 00000AC4 B85A0D                      mov ax, F4
+  1018 00000AC7 E642                        out 42h, al
+  1019 00000AC9 88E0                        mov al, ah
+  1020 00000ACB E642                        out 42h, al
+  1021 00000ACD E8D500                      call turn_speaker_on
+  1022 00000AD0 E8E000                      call delay
+  1023 00000AD3 E8DD00                      call delay
+  1024 00000AD6 E8DA00                      call delay
+  1025 00000AD9 E8D700                      call delay
+  1026 00000ADC E8D400                      call delay
+  1027 00000ADF E8D100                      call delay
+  1028 00000AE2 E8CE00                      call delay
+  1029 00000AE5 E8CB00                      call delay
+  1030 00000AE8 E8C800                      call delay
+  1031 00000AEB E8C500                      call delay
+  1032 00000AEE E8C200                      call delay
+  1033 00000AF1 E8BF00                      call delay
+  1034 00000AF4 E8BC00                      call delay
+  1035 00000AF7 E8B400                      call turn_speaker_off
+  1036                                      
+  1037                                      ; Second measure with variation
+  1038 00000AFA B8DB11                      mov ax, C4
+  1039 00000AFD E642                        out 42h, al
+  1040 00000AFF 88E0                        mov al, ah
+  1041 00000B01 E642                        out 42h, al
+  1042 00000B03 E89F00                      call turn_speaker_on
+  1043 00000B06 E8AA00                      call delay
+  1044 00000B09 E8A700                      call delay
+  1045 00000B0C E8A400                      call delay
+  1046 00000B0F E8A100                      call delay
+  1047 00000B12 E89E00                      call delay
+  1048 00000B15 E89B00                      call delay
+  1049 00000B18 E89800                      call delay
+  1050 00000B1B E89500                      call delay
+  1051 00000B1E E89200                      call delay
+  1052 00000B21 E88F00                      call delay
+  1053 00000B24 E88C00                      call delay
+  1054 00000B27 E88900                      call delay
+  1055 00000B2A E88600                      call delay
+  1056 00000B2D E87E00                      call turn_speaker_off
+  1057                                      
+  1058 00000B30 B8DB11                      mov ax, C4
+  1059 00000B33 E642                        out 42h, al
+  1060 00000B35 88E0                        mov al, ah
+  1061 00000B37 E642                        out 42h, al
+  1062 00000B39 E86900                      call turn_speaker_on
+  1063 00000B3C E87400                      call delay
+  1064 00000B3F E87100                      call delay
+  1065 00000B42 E86E00                      call delay
+  1066 00000B45 E86B00                      call delay
+  1067 00000B48 E86800                      call delay
+  1068 00000B4B E86500                      call delay
+  1069 00000B4E E86200                      call delay
+  1070 00000B51 E85F00                      call delay
+  1071 00000B54 E85C00                      call delay
+  1072 00000B57 E85900                      call delay
+  1073 00000B5A E85600                      call delay
+  1074 00000B5D E85300                      call delay
+  1075 00000B60 E85000                      call delay
+  1076 00000B63 E84800                      call turn_speaker_off
+  1077                                      
+  1078 00000B66 B8F007                      mov ax, D5
+  1079 00000B69 E642                        out 42h, al
+  1080 00000B6B 88E0                        mov al, ah
+  1081 00000B6D E642                        out 42h, al
+  1082 00000B6F E83300                      call turn_speaker_on
+  1083 00000B72 E83E00                      call delay
+  1084 00000B75 E83B00                      call delay
+  1085 00000B78 E83800                      call delay
+  1086 00000B7B E83500                      call delay
+  1087 00000B7E E83200                      call delay
+  1088 00000B81 E82F00                      call delay
+  1089 00000B84 E82C00                      call delay
+  1090 00000B87 E82900                      call delay
+  1091 00000B8A E82600                      call delay
+  1092 00000B8D E82300                      call delay
+  1093 00000B90 E82000                      call delay
+  1094 00000B93 E81D00                      call delay
+  1095 00000B96 E81A00                      call delay
+  1096                                      
+  1097 00000B99 E81200                      call turn_speaker_off
+  1098                                      
+  1099 00000B9C 59                          pop cx
+  1100 00000B9D 49                          dec cx
+  1101 00000B9E 0F85DDFD                    jnz .main_loop
+  1102 00000BA2 E9D3FD                      jmp play_background_music
+  1103                                  
+  1104                                  turn_speaker_on:
+  1105 00000BA5 E461                        in al, 61h
+  1106 00000BA7 88C4                        mov ah, al
+  1107 00000BA9 0C03                        or al, 3h
+  1108 00000BAB E661                        out 61h, al
+  1109 00000BAD C3                          ret
+  1110                                  
+  1111                                  turn_speaker_off:
+  1112 00000BAE 88E0                        mov al, ah
+  1113 00000BB0 E661                        out 61h, al
+  1114 00000BB2 C3                          ret
+  1115                                  
+  1116                                  delay:
+  1117                                      ; Adjustable delay for tempo control
+  1118 00000BB3 B9FFFF                      mov cx, 0FFFFh
+  1119                                  .delay_loop:
+  1120 00000BB6 E2FE                        loop .delay_loop
+  1121 00000BB8 C3                          ret
+  1122                                  
+  1123                                  
+  1124 00000BB9 00000000                oldisr: dd 0
+  1125 00000BBD 00000000                oldtimer: dd 0
+  1126                                  
+  1127                                  timer:
+  1128 00000BC1 1E                          push ds
+  1129 00000BC2 06                          push es
+  1130 00000BC3 60                          pusha
+  1131                                  
+  1132 00000BC4 0E                          push cs
+  1133 00000BC5 1F                          pop ds
+  1134 00000BC6 E8AF01                      call printScore
+  1135                                  
+  1136 00000BC9 8B1E[D402]                  mov bx, [current]
+  1137 00000BCD C1E302                      shl bx, 2
+  1138                                  
+  1139 00000BD0 8C97[CE00]                  mov [pcb+bx], ss
+  1140 00000BD4 89A7[D000]                  mov [pcb+bx+2], sp
+  1141                                  
+  1142 00000BD8 8306[D402]01                add word [current], 1
+  1143 00000BDD 8326[D402]01                and word [current], 1
+  1144 00000BE2 8B1E[D402]                  mov bx, [current]
+  1145 00000BE6 C1E302                      shl bx, 2
+  1146                                  
+  1147 00000BE9 8E97[CE00]                  mov ss, [pcb+bx]
+  1148 00000BED 8BA7[D000]                  mov sp, [pcb+bx+2]
+  1149                                  
+  1150                                      ; call play_background_music
+  1151                                  
+  1152                                  exit_timer:
+  1153 00000BF1 B020                    	mov al, 0x20
+  1154 00000BF3 E620                    	out 0x20, al
+  1155 00000BF5 61                          popa
+  1156 00000BF6 07                          pop es
+  1157 00000BF7 1F                          pop ds
+  1158 00000BF8 CF                          iret 
+  1159                                  
+  1160                                  kbisr:
+  1161 00000BF9 60                          pusha
+  1162 00000BFA E460                        in al, 0x60
+  1163                                  
+  1164 00000BFC 3CB9                        cmp al, 0xB9
+  1165 00000BFE 7411                        je .SpaceUP
+  1166                                  
+  1167 00000C00 3C01                        cmp al, 0X01
+  1168 00000C02 7414                        je .escPressed
+  1169                                  
+  1170 00000C04 EB05                        jmp .retWithoutChaining
+  1171                                      .continueNormal:
+  1172 00000C06 61                              popa
+  1173 00000C07 FF2E[B90B]                      jmp far [oldisr]
+  1174                                      .retWithoutChaining:
+  1175 00000C0B B020                            mov al, 0x20
+  1176 00000C0D E620                            out 0x20, al
+  1177 00000C0F 61                              popa
+  1178 00000C10 CF                              iret
+  1179                                  
+  1180                                      .SpaceUP:
+  1181 00000C11 C606[6300]01                    mov byte [spacePressed], 1
+  1182                                          ;call play_score_sound 
+  1183 00000C16 EBF3                            jmp .retWithoutChaining
+  1184                                  
+  1185                                      .escPressed:
+  1186 00000C18 E893FF                          call turn_speaker_off
+  1187 00000C1B C606[8800]00                    mov byte[YPressed], 0
+  1188 00000C20 C606[8900]00                    mov byte[NPressed], 0
+  1189 00000C25 E8BD00                          call clrscrn
+  1190 00000C28 E8CD00                          call prompt_and_input_str
+  1191 00000C2B E877FF                          call turn_speaker_on
+  1192 00000C2E EBDB                            jmp .retWithoutChaining
+  1193                                  
+  1194                                  movePillars:
+  1195 00000C30 60                          pusha
+  1196 00000C31 B90300                      mov cx, PILLAR_COUNT
+  1197 00000C34 BB0600                      mov bx, PILLAR_COUNT*2
+  1198                                      .movePillar:
+  1199 00000C37 83EB02                          sub bx, 2
+  1200                                  
+  1201 00000C3A 83BF[5700]FF                    cmp word [pillar_columns+bx], -1
+  1202 00000C3F 7470                            je .skipPillar
+  1203                                  
+  1204 00000C41 FFB7[5D00]                      push word [pillar_heights+bx]
+  1205 00000C45 FFB7[5700]                      push word [pillar_columns+bx]
+  1206 00000C49 68A300                          push 163
+  1207 00000C4C E8E3FB                          call drawBackgroundInUpPillarPlace
+  1208                                  
+  1209 00000C4F 8B87[5D00]                      mov ax, [pillar_heights+bx]
+  1210 00000C53 83C028                          add ax, VERTICAL_PILLAR_GAP
+  1211 00000C56 2DA300                          sub ax, 163
+  1212 00000C59 F7D8                            neg ax
+  1213 00000C5B 50                              push word ax
+  1214 00000C5C FFB7[5700]                      push word [pillar_columns+bx]
+  1215 00000C60 E83AFB                          call drawBackgroundInDownPillarPlace
+  1216                                  
+  1217 00000C63 83AF[5700]0A                    sub word [pillar_columns+bx], PILLAR_STEP
+  1218 00000C68 83BF[5700]00                    cmp word [pillar_columns+bx], 0
+  1219 00000C6D 7D06                            jge .dontReset
+  1220 00000C6F C787[5700]0E01                      mov word [pillar_columns+bx], STARTING_ROW-PILLAR_STEP
+  1221                                          .dontReset:
+  1222                                  
+  1223 00000C75 FFB7[5D00]                      push word [pillar_heights+bx]
+  1224 00000C79 FFB7[5700]                      push word [pillar_columns+bx]
+  1225 00000C7D 68A300                          push 163
+  1226 00000C80 E848FA                          call drawUpPillar
+  1227                                  
+  1228 00000C83 8B87[5D00]                      mov ax, [pillar_heights+bx]
+  1229 00000C87 83C028                          add ax, VERTICAL_PILLAR_GAP
+  1230 00000C8A 2DA300                          sub ax, 163
+  1231 00000C8D F7D8                            neg ax
+  1232 00000C8F 50                              push word ax
+  1233 00000C90 FFB7[5700]                      push word [pillar_columns+bx]
+  1234 00000C94 E8A4FA                          call drawDownPillar
+  1235                                  
+  1236 00000C97 81BF[5700]A400                  cmp word [pillar_columns+bx], STARTING_ROW-PILLAR_GAP-PILLAR_STEP
+  1237 00000C9D 7F12                            jg .skipPillar
+  1238 00000C9F 83FB00                          cmp bx, 0
+  1239 00000CA2 740D                            je .skipPillar
+  1240 00000CA4 83BF[5500]FF                    cmp word [pillar_columns+bx-2], -1
+  1241 00000CA9 7506                            jne .skipPillar
+  1242 00000CAB C787[5500]0E01                  mov word [pillar_columns+bx-2], STARTING_ROW-PILLAR_STEP
+  1243                                          .skipPillar:
+  1244 00000CB1 E284                            loop .movePillar
+  1245 00000CB3 61                          popa
+  1246 00000CB4 C3                          ret
+  1247                                  
+  1248                                  moveGround:
+  1249 00000CB5 55                          push bp
+  1250 00000CB6 89E5                        mov bp, sp
+  1251 00000CB8 60                          pusha
+  1252 00000CB9 B800A0                      mov ax, 0xA000
+  1253 00000CBC 8EC0                        mov es, ax
+  1254                                  
+  1255 00000CBE B92800                      mov cx, 200-160
+  1256 00000CC1 BF00C8                      mov di, 320*160
+  1257                                  
+  1258                                      .next_row:
+  1259 00000CC4 268A05                          mov al, byte[es:di]
+  1260 00000CC7 89FE                            mov si, di
+  1261 00000CC9 BA3F01                          mov dx, 320-1
+  1262                                  
+  1263                                          .shift_row:
+  1264 00000CCC 268A5C01                            mov bl, byte[es:si+1]
+  1265 00000CD0 26881C                              mov byte[es:si], bl
+  1266 00000CD3 46                                  inc si
+  1267 00000CD4 4A                                  dec dx
+  1268 00000CD5 75F5                                jnz .shift_row
+  1269                                          
+  1270 00000CD7 268804                          mov [es:si], al
+  1271                                  
+  1272 00000CDA 81C74001                        add di, 320
+  1273 00000CDE E2E4                            loop .next_row
+  1274                                  
+  1275 00000CE0 61                          popa
+  1276 00000CE1 89EC                        mov sp, bp
+  1277 00000CE3 5D                          pop bp
+  1278                                  
+  1279 00000CE4 C3                          ret
+  1280                                      
+  1281                                      clrscrn:
+  1282 00000CE5 60                          pusha
+  1283 00000CE6 B800A0                      mov ax, 0xA000
+  1284 00000CE9 8EC0                        mov es, ax
+  1285                                  
+  1286 00000CEB BF0000                      mov di, 0          
+  1287 00000CEE B0FF                        mov al, 0xFF       
+  1288 00000CF0 B900FA                      mov cx, 64000
+  1289                                          
+  1290                                      .clearLoop:
+  1291 00000CF3 AA                              stosb              
+  1292 00000CF4 E2FD                            loop .clearLoop   
+  1293                                  
+  1294 00000CF6 61                          popa
+  1295 00000CF7 C3                          ret
+  1296                                  
+  1297                                  prompt_and_input_str:
+  1298 00000CF8 55                          push bp
+  1299 00000CF9 89E5                        mov bp, sp
+  1300 00000CFB 60                          pusha
+  1301 00000CFC 06                          push es
+  1302                                      
+  1303                                      ; Center cursor
+  1304 00000CFD B200                        mov dl, 0
+  1305 00000CFF B600                        mov dh, 0
+  1306 00000D01 B700                        mov bh, 0h
+  1307 00000D03 B402                        mov ah, 02h
+  1308 00000D05 CD10                        int 0x10
+  1309                                  
+  1310                                      ; PROMPT
+  1311 00000D07 B409                        mov ah, 09h
+  1312 00000D09 8D16[6500]                  lea dx, escMsg
+  1313 00000D0D CD21                        int 0x21
+  1314                                  
+  1315                                      ; INPUT
+  1316                                      .waitForInput:
+  1317 00000D0F E460                            in al, 0x60             
+  1318 00000D11 3C15                            cmp al, 0x15           
+  1319 00000D13 7410                            je .YPressed
+  1320 00000D15 3C31                            cmp al, 0x31            
+  1321 00000D17 7402                            je .NPressed
+  1322 00000D19 EBF4                            jmp .waitForInput
+  1323                                  
+  1324                                      .NPressed:
+  1325 00000D1B E83DF6                          call drawBG
+  1326 00000D1E C606[8900]01                    mov byte[NPressed], 1
+  1327 00000D23 EB07                            jmp .exit
+  1328                                  
+  1329                                      .YPressed:
+  1330 00000D25 C606[8800]01                    mov byte[YPressed], 1
+  1331 00000D2A EB00                            jmp .exit
+  1332                                  
+  1333                                      .exit:
+  1334 00000D2C 07                              pop es
+  1335 00000D2D 61                              popa
+  1336 00000D2E 89EC                            mov sp, bp
+  1337 00000D30 5D                              pop bp
+  1338 00000D31 C3                              ret
+  1339                                  
+  1340                                  printEndScore:
+  1341 00000D32 60                          pusha
+  1342 00000D33 A1[8A00]                    mov ax, [score]        
+  1343 00000D36 BB0A00                      mov bx, 10             
+  1344 00000D39 8D3E[9300]                  lea di, [ScoreBuffer + 5] 
+  1345 00000D3D C60524                      mov byte [di], '$'     
+  1346 00000D40 4F                          dec di                 
+  1347                                  
+  1348                                      .convert_loop:
+  1349 00000D41 31D2                            xor dx, dx         
+  1350 00000D43 F7F3                            div bx             
+  1351 00000D45 80C230                          add dl, '0'        
+  1352 00000D48 8815                            mov [di], dl       
+  1353 00000D4A 4F                              dec di             
+  1354 00000D4B 85C0                            test ax, ax        
+  1355 00000D4D 75F2                            jnz .convert_loop   
+  1356                                  
+  1357 00000D4F 8D7501                      lea si, [di+1]
+  1358                                  
+  1359 00000D52 B213                        mov dl, 19
+  1360 00000D54 B603                        mov dh, 3        
+  1361 00000D56 B700                        mov bh, 0              
+  1362 00000D58 B402                        mov ah, 02h            
+  1363 00000D5A CD10                        int 0x10               
+  1364                                  
+  1365                                      ; Set text color attribute (before printing)
+  1366 00000D5C B409                        mov ah, 09h            ; BIOS function to write character and attribute
+  1367 00000D5E B30B                        mov bl, 0Bh           
+  1368 00000D60 B90100                      mov cx, 1             ; Number of times to print
+  1369 00000D63 8A04                        mov al, [si]          ; Character to print
+  1370                                      
+  1371                                      .print_loop:
+  1372 00000D65 B409                            mov ah, 09h
+  1373 00000D67 CD10                            int 10h           ; Print character with color
+  1374 00000D69 46                              inc si
+  1375 00000D6A FEC2                            inc dl            ; Move cursor right
+  1376 00000D6C B402                            mov ah, 02h
+  1377 00000D6E CD10                            int 10h           ; Set cursor position
+  1378 00000D70 8A04                            mov al, [si]      ; Get next character
+  1379 00000D72 3C24                            cmp al, '$'       ; Check if we are done
+  1380 00000D74 75EF                            jne .print_loop
+  1381                                  
+  1382 00000D76 61                          popa
+  1383 00000D77 C3                          ret
+  1384                                  
+  1385                                  printScore:
+  1386 00000D78 60                          pusha
+  1387 00000D79 A1[8A00]                    mov ax, [score]        
+  1388 00000D7C BB0A00                      mov bx, 10             
+  1389 00000D7F 8D3E[9300]                  lea di, [ScoreBuffer + 5] 
+  1390 00000D83 C60524                      mov byte [di], '$'     
+  1391 00000D86 4F                          dec di                 
+  1392                                  
+  1393                                      .convert_loop:
+  1394 00000D87 31D2                            xor dx, dx         
+  1395 00000D89 F7F3                            div bx             
+  1396 00000D8B 80C230                          add dl, '0'        
+  1397 00000D8E 8815                            mov [di], dl       
+  1398 00000D90 4F                              dec di             
+  1399 00000D91 85C0                            test ax, ax        
+  1400 00000D93 75F2                            jnz .convert_loop   
+  1401                                  
+  1402 00000D95 8D7501                      lea si, [di+1]
+  1403                                  
+  1404 00000D98 B213                        mov dl, 19
+  1405 00000D9A B601                        mov dh, 1        
+  1406 00000D9C B700                        mov bh, 0              
+  1407 00000D9E B402                        mov ah, 02h            
+  1408 00000DA0 CD10                        int 0x10               
+  1409                                  
+  1410                                      ; Set text color attribute (before printing)
+  1411 00000DA2 B409                        mov ah, 09h            ; BIOS function to write character and attribute
+  1412 00000DA4 B30B                        mov bl, 0Bh           
+  1413 00000DA6 B90100                      mov cx, 1             ; Number of times to print
+  1414 00000DA9 8A04                        mov al, [si]          ; Character to print
+  1415                                      
+  1416                                      .print_loop:
+  1417 00000DAB B409                            mov ah, 09h
+  1418 00000DAD CD10                            int 10h           ; Print character with color
+  1419 00000DAF 46                              inc si
+  1420 00000DB0 FEC2                            inc dl            ; Move cursor right
+  1421 00000DB2 B402                            mov ah, 02h
+  1422 00000DB4 CD10                            int 10h           ; Set cursor position
+  1423 00000DB6 8A04                            mov al, [si]      ; Get next character
+  1424 00000DB8 3C24                            cmp al, '$'       ; Check if we are done
+  1425 00000DBA 75EF                            jne .print_loop
+  1426                                  
+  1427 00000DBC 61                          popa
+  1428 00000DBD C3                          ret
+  1429                                  
+  1430                                  
+  1431                                  start:
+  1432 00000DBE B84C04                      mov ax, 1100
+  1433 00000DC1 E640                        out 0x40, al
+  1434 00000DC3 88E0                        mov al, ah
+  1435 00000DC5 E640                        out 0x40, al
+  1436                                  
+  1437 00000DC7 31C0                        xor ax, ax;
+  1438 00000DC9 CD16                        int 0x16
+  1439                                  
+  1440                                      ; Set video mode to 13h (320x200, 256 colors)
+  1441 00000DCB B81300                      mov ax, 0x13
+  1442 00000DCE CD10                        int 0x10
+  1443                                  
+  1444 00000DD0 B80000                      mov ax, 0;
+  1445 00000DD3 8EC0                        mov es, ax;
+  1446                                  
+  1447 00000DD5 8C1E[D200]                  mov word [pcb+1*4+0], ds
+  1448 00000DD9 C706[D202]0002              mov word [stack+255*2-2], 0x0200
+  1449 00000DDF 8C0E[D002]                  mov word [stack+255*2-4], cs
+  1450 00000DE3 C706[CE02][7809]            mov word [stack+255*2-6], play_background_music
+  1451 00000DE9 8C1E[CC02]                  mov word [stack+255*2-8], ds
+  1452 00000DED C706[C002][CA02]            mov word [stack+255*2-10-2*5], stack+255*2-10
+  1453 00000DF3 C706[D400][BA02]            mov word [pcb+1*4+2], stack+255*2-10-16
+  1454                                  
+  1455                                  startscreen:
+  1456                                      openfile start_screen_filename
+     4 00000DF9 52                  <1> push dx
+     5 00000DFA BA[2D00]            <1> mov dx, %1
+     6 00000DFD B000                <1> mov al, 0
+     7 00000DFF B43D                <1> mov ah, 0x3D
+     8 00000E01 CD21                <1> int 0x21
+     9 00000E03 5A                  <1> pop dx
+  1457 00000E04 A3[3700]                    mov [start_screen_handle], ax
+  1458 00000E07 E8ECF5                      call drawStartScreen
+  1459                                  
+  1460                                  
+  1461                                  keypress:
+  1462 00000E0A 31C0                        xor ax, ax    
+  1463 00000E0C B400                        mov ah, 0
+  1464 00000E0E CD16                        int 0x16
+  1465                                  
+  1466 00000E10 3C52                        cmp al, 'R'
+  1467 00000E12 7414                        je helpscreen
+  1468 00000E14 3C72                        cmp al, 'r'
+  1469 00000E16 7410                        je helpscreen
+  1470 00000E18 3C50                        cmp al, 'P'
+  1471 00000E1A 7425                        je Resume
+  1472 00000E1C 3C70                        cmp al, 'p'
+  1473 00000E1E 7421                        je Resume
+  1474 00000E20 3C1B                        cmp al, 0x1B
+  1475 00000E22 0F843901                    je exit
+  1476 00000E26 EBE2                        jmp keypress
+  1477                                      
+  1478                                  
+  1479                                  helpscreen:      
+  1480                                      openfile help_screen_filename
+     4 00000E28 52                  <1> push dx
+     5 00000E29 BA[3900]            <1> mov dx, %1
+     6 00000E2C B000                <1> mov al, 0
+     7 00000E2E B43D                <1> mov ah, 0x3D
+     8 00000E30 CD21                <1> int 0x21
+     9 00000E32 5A                  <1> pop dx
+  1481 00000E33 A3[4200]                    mov [help_screen_handle], ax
+  1482 00000E36 E858F6                      call Rules
+  1483                                  
+  1484 00000E39 B400                        mov ah, 0
+  1485 00000E3B CD16                        int 0x16
+  1486 00000E3D 3C1B                        cmp al, 0x1B
+  1487 00000E3F 74B8                        je startscreen
+  1488                                  
+  1489                                  
+  1490                                  Resume:
+  1491 00000E41 B80000                      mov ax, 0
+  1492 00000E44 8EC0                        mov es, ax
+  1493                                  
+  1494                                      ; SAVE PREVIOUS KBISR
+  1495 00000E46 26A12400                    mov ax, [es:9*4]
+  1496 00000E4A A3[B90B]                    mov [oldisr], ax
+  1497                                  
+  1498 00000E4D 26A12600                    mov ax, [es:9*4+2];
+  1499 00000E51 A3[BB0B]                    mov [oldisr+2], ax
+  1500                                  
+  1501                                      ; SAVE PREVIOUS TIMER
+  1502 00000E54 26A12000                    mov ax,word[es:8*4];
+  1503 00000E58 A3[BD0B]                    mov word[oldtimer], ax;
+  1504                                  
+  1505 00000E5B 26A12200                    mov ax,word[es:8*4+2];
+  1506 00000E5F A3[BF0B]                    mov word[oldtimer+2], ax;
+  1507                                  
+  1508                                      ; HOOK
+  1509 00000E62 FA                          cli
+  1510 00000E63 26C7062000[C10B]            mov word[es:8*4], timer  ; Set ISR address for IRQ0 (Timer)
+  1511 00000E6A 268C0E2200                  mov word[es:8*4+2], cs
+  1512                                  
+  1513 00000E6F 268C0E2600                  mov [es:9*4+2], cs
+  1514 00000E74 26C7062400[F90B]            mov word [es:9*4], kbisr
+  1515 00000E7B FB                          sti
+  1516                                  
+  1517                                      openfile bird_filename
+     4 00000E7C 52                  <1> push dx
+     5 00000E7D BA[1000]            <1> mov dx, %1
+     6 00000E80 B000                <1> mov al, 0
+     7 00000E82 B43D                <1> mov ah, 0x3D
+     8 00000E84 CD21                <1> int 0x21
+     9 00000E86 5A                  <1> pop dx
+  1518 00000E87 A3[1900]                    mov [bird_handle], ax;
+  1519                                      openfile bg_filename
+     4 00000E8A 52                  <1> push dx
+     5 00000E8B BA[0400]            <1> mov dx, %1
+     6 00000E8E B000                <1> mov al, 0
+     7 00000E90 B43D                <1> mov ah, 0x3D
+     8 00000E92 CD21                <1> int 0x21
+     9 00000E94 5A                  <1> pop dx
+  1520 00000E95 A3[0E00]                    mov [bg_handle], ax
+  1521                                      openfile pillar_filename
+     4 00000E98 52                  <1> push dx
+     5 00000E99 BA[1B00]            <1> mov dx, %1
+     6 00000E9C B000                <1> mov al, 0
+     7 00000E9E B43D                <1> mov ah, 0x3D
+     8 00000EA0 CD21                <1> int 0x21
+     9 00000EA2 5A                  <1> pop dx
+  1522 00000EA3 A3[2200]                    mov [pillar_handle], ax
+  1523                                      openfile down_pillar_filename
+     4 00000EA6 52                  <1> push dx
+     5 00000EA7 BA[2400]            <1> mov dx, %1
+     6 00000EAA B000                <1> mov al, 0
+     7 00000EAC B43D                <1> mov ah, 0x3D
+     8 00000EAE CD21                <1> int 0x21
+     9 00000EB0 5A                  <1> pop dx
+  1524 00000EB1 A3[2B00]                    mov [down_pillar_handle], ax
+  1525                                  
+  1526 00000EB4 E8A4F4                      call drawBG
+  1527                                  
+  1528                                      .infLoop:
+  1529 00000EB7 E8FBFD                          call moveGround
+  1530 00000EBA E818FA                          call drawBackgroundInBirdPlace
+  1531 00000EBD 803E[6300]00                    cmp byte [spacePressed], 0
+  1532 00000EC2 7411                            je .dontMoveUp
+  1533 00000EC4 C606[6300]00                        mov byte [spacePressed], 0
+  1534 00000EC9 833E[5300]41                        cmp word [bird_row], 65
+  1535 00000ECE 7C05                                jl .dontMoveUp
+  1536 00000ED0 832E[5300]19                        sub word [bird_row], 25
+  1537                                          .dontMoveUp:
+  1538 00000ED5 8306[5300]05                    add word [bird_row], 5
+  1539 00000EDA E852F7                          call drawBird
+  1540 00000EDD 803E[6400]01                    cmp byte[collsionFlag], 1
+  1541 00000EE2 7417                            je .gameOver
+  1542 00000EE4 813E[5300]B800                  cmp word [bird_row], 184
+  1543 00000EEA 7D0F                            jge .gameOver
+  1544 00000EEC E841FD                          call movePillars
+  1545 00000EEF E85AF4                          call delay1
+  1546 00000EF2 803E[8800]01                    cmp byte[YPressed], 1
+  1547 00000EF7 7402                            je .gameOver
+  1548 00000EF9 EBBC                            jmp .infLoop
+  1549                                  
+  1550                                      .gameOver:
+  1551                                          ; call delay
+  1552                                          ; call delay
+  1553                                          ; call delay
+  1554                                          ; call delay
+  1555                                          ; call delay
+  1556                                          ; call delay
+  1557                                          ; call delay
+  1558                                          ; call delay
+  1559                                          ; call delay
+  1560                                          ; call delay
+  1561                                          ; call delay
+  1562                                          ; call delay
+  1563                                          ; call delay
+  1564                                          ; call delay
+  1565                                          ; call delay
+  1566                                          ; call delay
+  1567                                          ; call delay
+  1568                                          ; call delay
+  1569                                          ; call delay
+  1570                                          ; call delay
+  1571                                          ; call delay
+  1572                                          ; call delay
+  1573                                          ; call delay
+  1574                                          ; call delay
+  1575                                          ; call delay
+  1576                                          ; call delay
+  1577 00000EFB E8B0FC                          call turn_speaker_off
+  1578                                          closefile bird_handle
+    15 00000EFE 53                  <1> push bx
+    16 00000EFF B43E                <1> mov ah, 0x3E
+    17 00000F01 BB[1900]            <1> mov bx, %1
+    18 00000F04 CD21                <1> int 0x21
+    19 00000F06 5B                  <1> pop bx
+  1579                                          closefile bg_handle
+    15 00000F07 53                  <1> push bx
+    16 00000F08 B43E                <1> mov ah, 0x3E
+    17 00000F0A BB[0E00]            <1> mov bx, %1
+    18 00000F0D CD21                <1> int 0x21
+    19 00000F0F 5B                  <1> pop bx
+  1580                                          closefile pillar_handle
+    15 00000F10 53                  <1> push bx
+    16 00000F11 B43E                <1> mov ah, 0x3E
+    17 00000F13 BB[2200]            <1> mov bx, %1
+    18 00000F16 CD21                <1> int 0x21
+    19 00000F18 5B                  <1> pop bx
+  1581                                          closefile down_pillar_handle
+    15 00000F19 53                  <1> push bx
+    16 00000F1A B43E                <1> mov ah, 0x3E
+    17 00000F1C BB[2B00]            <1> mov bx, %1
+    18 00000F1F CD21                <1> int 0x21
+    19 00000F21 5B                  <1> pop bx
+  1582                                  
+  1583                                          ;UNHOOK
+  1584 00000F22 B80000                          mov ax, 0;
+  1585 00000F25 8EC0                            mov es, ax;
+  1586                                  
+  1587 00000F27 A1[B90B]                        mov ax, [oldisr]
+  1588 00000F2A 26A32400                        mov [es:9*4], ax
+  1589                                  
+  1590 00000F2E A1[BB0B]                        mov ax, [oldisr+2];
+  1591 00000F31 26A32600                        mov [es:9*4+2], ax
+  1592                                  
+  1593 00000F35 A1[BD0B]                        mov ax,word[oldtimer]
+  1594 00000F38 26A32000                        mov word[es:8*4], ax
+  1595                                  
+  1596 00000F3C A1[BF0B]                        mov ax,word[oldtimer+2]
+  1597 00000F3F 26A32200                        mov word[es:8*4+2], ax
+  1598                                  
+  1599                                          openfile gameOverScreen_filename
+     4 00000F43 52                  <1> push dx
+     5 00000F44 BA[4400]            <1> mov dx, %1
+     6 00000F47 B000                <1> mov al, 0
+     7 00000F49 B43D                <1> mov ah, 0x3D
+     8 00000F4B CD21                <1> int 0x21
+     9 00000F4D 5A                  <1> pop dx
+  1600 00000F4E A3[5100]                        mov [gameOverScreen_handle], ax    
+  1601 00000F51 E8D8F5                          call gameOverscreen  
+  1602 00000F54 B400                            mov ah, 0
+  1603 00000F56 CD16                            int 0x16 
+  1604 00000F58 E88AFD                          call clrscrn
+  1605                                  
+  1606                                          ; call clrscrn
+  1607                                          ; mov dl, 0
+  1608                                          ; mov dh, 0
+  1609                                          ; mov bh, 0
+  1610                                          ; mov ah, 02h
+  1611                                          ; int 0x10
+  1612                                          ; mov ah, 0x09
+  1613                                          ; lea dx, gameOverMessage
+  1614                                          ; int 0x21
+  1615                                  
+  1616 00000F5B 31C0                            xor ax, ax;
+  1617 00000F5D CD16                            int 0x16
+  1618                                  
+  1619                                      ; Exit the program
+  1620                                      exit:
+  1621 00000F5F E883FD                      call clrscrn
+  1622 00000F62 B200                        mov dl, 0
+  1623 00000F64 B600                        mov dh, 0
+  1624 00000F66 B700                        mov bh, 0
+  1625 00000F68 B402                        mov ah, 02h
+  1626 00000F6A CD10                        int 0x10
+  1627 00000F6C B409                        mov ah, 0x09
+  1628 00000F6E 8D16[9C00]                  lea dx, gameOverMessage
+  1629 00000F72 CD21                        int 0x21
+  1630 00000F74 B409                        mov ah, 0x09
+  1631 00000F76 8D16[BE00]                  lea dx, newLine
+  1632 00000F7A CD21                        int 0x21
+  1633 00000F7C B8004C                      mov ax, 0x4C00
+  1634 00000F7F CD21                        int 0x21
+  1635                                  
+  1636 00000F81 00<rep 7D0h>            buffer: times 2000 db 0
